@@ -4,29 +4,28 @@ using Random = UnityEngine.Random;
 
 public class ProceduralLevelGenerator : MonoBehaviour
 {
-    [Header("Cuadricula")]
-    [Min(5)] public int width = 12;
-    [Min(5)] public int height = 8;
+   
+
+    [Header("Cuadricula (Minimo 10x8)")]
+    [Min(10)] public int width = 12;
+    [Min(8)] public int height = 8;
     [Min(1f)] public float cellSize = 2f;
 
     [Header("Generacion")]
-    [Range(0f, 0.45f)]
-    public float wallProbability = 0.22f;
-    [Min(0)]
-    public int rewardCount = 5;
+    [Range(0f, 0.45f)] public float wallProbability = 0.22f;
+    [Min(0)] public int rewardCount = 5;
+    [Min(0)] public int robotCount = 3;
     public int seed = 12345;
 
     [Header("Prefabs")]
     public GameObject floorPrefab;
     public GameObject wallPrefab;
     public GameObject startPrefab;
-    public GameObject goalPrefab;
+    public GameObject goalPrefab;      // Núcleo Central
     public GameObject rewardPrefab;
+    public GameObject robotPrefab;     // Robots enemigos
 
-    // 0 = transitable, 1 = muro
-    private int[,] map;
-
-    // Referencias para limpiar la generación previa
+    private int[,] map; // 0 = transitable, 1 = muro
     private readonly List<GameObject> generatedObjects = new List<GameObject>();
 
     private void Start()
@@ -41,7 +40,7 @@ public class ProceduralLevelGenerator : MonoBehaviour
 
         ClearGenerated();
 
-        // Guardamos el estado global para no alterar otros sistemas aleatorios.
+        // Control determinista de la semilla aleatoria
         Random.State previousState = Random.state;
         Random.InitState(seed);
 
@@ -50,57 +49,58 @@ public class ProceduralLevelGenerator : MonoBehaviour
 
         map = new int[width, height];
 
-        // Generación inicial del mapa
+        // PASO 1: APLICAR REGLAS DE CONSTRUCCIÓN Y RESTRICCIONES
         for (int x = 0; x < width; x++)
         {
             for (int y = 0; y < height; y++)
             {
-                bool border = x == 0 || y == 0 || x == width - 1 || y == height - 1;
-                bool protectedCell = new Vector2Int(x, y) == start || new Vector2Int(x, y) == goal;
+                bool border = x == 0 || y == 0 || x == width - 1 || y == height - 1; // Regla 1
+                bool protectedCell = new Vector2Int(x, y) == start || new Vector2Int(x, y) == goal; // Restricción 1
 
                 if (border)
                 {
-                    map[x, y] = 1; // Muro
+                    map[x, y] = 1;
                 }
                 else if (protectedCell)
                 {
-                    map[x, y] = 0; // Transitable
+                    map[x, y] = 0;
                 }
                 else
                 {
-                    map[x, y] = Random.value < wallProbability ? 1 : 0; // Muro o transitable
+                    map[x, y] = Random.value < wallProbability ? 1 : 0; // Regla 2
                 }
             }
         }
 
-        // Restricción de jugabilidad (corredor en L garantizado)
-        CaveGuaranteedPath(start, goal);
+        // PASO 2: ESTRATEGIA DE CONECTIVIDAD (Regla 3)
+        CarveGuaranteedPath(start, goal);
 
-        // Representación visual 
+        // PASO 3: REPRESENTACIÓN VISUAL
         BuildGeometry();
 
         Spawn(startPrefab, CellToWorld(start, 0.5f), "Start");
-        Spawn(goalPrefab, CellToWorld(goal, 0.5f), "Goal");
+        Spawn(goalPrefab, CellToWorld(goal, 0.5f), "Goal_NucleoCentral");
 
-        // Contenido adicional
-        int spawnedRewards = SpawnRewards(start, goal);
+        // PASO 4: CONTENIDO ADICIONAL (Restricciones 2 y 3)
+        List<Vector2Int> rewardPositions = SpawnRewards(start, goal);
+        int spawnedRobots = SpawnRobots(start, goal, rewardPositions);
 
-        string mission = "Llega a la meta y recoge " + spawnedRewards + " recompensas.";
-        Debug.Log("Semilla: " + seed + " | Recompensas: " + spawnedRewards + " | Misión: " + mission);
+        // PASO 5: MISIÓN DINÁMICA BASADA EN PARÁMETROS
+        string mission = $"Infiltración: Alcanza el Núcleo Central, recolecta {rewardPositions.Count} datos y evade {spawnedRobots} robots.";
 
-        Random.state = previousState; // Restauramos el estado global
+        Debug.Log($"<b>[RESULTADO DE EVALUACIÓN]</b>\n" +
+                  $"• Semilla: <b>{seed}</b> | Tamaño: <b>{width}x{height}</b>\n" +
+                  $"• Probabilidad Muros: <b>{wallProbability * 100}%</b>\n" +
+                  $"• Recompensas: <b>{rewardPositions.Count}</b> | Robots: <b>{spawnedRobots}</b>\n" +
+                  $"• Misión: <i>{mission}</i>");
+
+        Random.state = previousState;
     }
 
-    private void CaveGuaranteedPath(Vector2Int start, Vector2Int goal)
+    private void CarveGuaranteedPath(Vector2Int start, Vector2Int goal)
     {
-        for (int x = start.x; x <= goal.x; x++)
-        {
-            map[x, start.y] = 0; // Transitable
-        }
-        for (int y = start.y; y <= goal.y; y++)
-        {
-            map[goal.x, y] = 0; // Transitable
-        }
+        for (int x = start.x; x <= goal.x; x++) map[x, start.y] = 0;
+        for (int y = start.y; y <= goal.y; y++) map[goal.x, y] = 0;
     }
 
     private void BuildGeometry()
@@ -110,53 +110,78 @@ public class ProceduralLevelGenerator : MonoBehaviour
             for (int y = 0; y < height; y++)
             {
                 Vector2Int cell = new Vector2Int(x, y);
+                Spawn(floorPrefab, CellToWorld(cell, 0f), $"Floor_{x}_{y}");
 
-                // Instanciar Suelo
-                Spawn(floorPrefab, CellToWorld(cell, 0f), "Floor_" + x + "_" + y);
-
-                // Instanciar Muro (si corresponde)
                 if (map[x, y] == 1)
                 {
-                    Spawn(wallPrefab, CellToWorld(cell, 0.5f), "Wall_" + x + "_" + y);
+                    Spawn(wallPrefab, CellToWorld(cell, 0.5f), $"Wall_{x}_{y}");
                 }
             }
         }
     }
 
-    private int SpawnRewards(Vector2Int start, Vector2Int goal)
+    private List<Vector2Int> SpawnRewards(Vector2Int start, Vector2Int goal)
     {
-        List<Vector2Int> candidates = new List<Vector2Int>();
+        List<Vector2Int> candidates = GetTransitableCells(start, goal);
+        ShuffleList(candidates);
 
+        int amount = Mathf.Min(rewardCount, candidates.Count);
+        List<Vector2Int> spawnedPositions = new List<Vector2Int>();
+
+        for (int i = 0; i < amount; i++)
+        {
+            Spawn(rewardPrefab, CellToWorld(candidates[i], 0.5f), $"Reward_{i}");
+            spawnedPositions.Add(candidates[i]);
+        }
+
+        return spawnedPositions;
+    }
+
+    private int SpawnRobots(Vector2Int start, Vector2Int goal, List<Vector2Int> rewardPositions)
+    {
+        if (robotCount <= 0 || robotPrefab == null) return 0;
+
+        List<Vector2Int> candidates = GetTransitableCells(start, goal);
+        candidates.RemoveAll(cell => rewardPositions.Contains(cell)); // Restricción 3
+
+        ShuffleList(candidates);
+
+        int amount = Mathf.Min(robotCount, candidates.Count);
+
+        for (int i = 0; i < amount; i++)
+        {
+            Spawn(robotPrefab, CellToWorld(candidates[i], 0.5f), $"Robot_{i}");
+        }
+
+        return amount;
+    }
+
+    private List<Vector2Int> GetTransitableCells(Vector2Int start, Vector2Int goal)
+    {
+        List<Vector2Int> list = new List<Vector2Int>();
         for (int x = 1; x < width - 1; x++)
         {
             for (int y = 1; y < height - 1; y++)
             {
                 Vector2Int cell = new Vector2Int(x, y);
-
                 if (map[x, y] == 0 && cell != start && cell != goal)
                 {
-                    candidates.Add(cell);
+                    list.Add(cell);
                 }
             }
         }
+        return list;
+    }
 
-        // Mezcla Fisher-Yates corregida
-        for (int i = candidates.Count - 1; i > 0; i--)
+    private void ShuffleList(List<Vector2Int> list)
+    {
+        for (int i = list.Count - 1; i > 0; i--)
         {
             int j = Random.Range(0, i + 1);
-            Vector2Int temp = candidates[i];
-            candidates[i] = candidates[j];
-            candidates[j] = temp;
+            Vector2Int temp = list[i];
+            list[i] = list[j];
+            list[j] = temp;
         }
-
-        int amount = Mathf.Min(rewardCount, candidates.Count);
-
-        for (int i = 0; i < amount; i++)
-        {
-            Spawn(rewardPrefab, CellToWorld(candidates[i], 0.5f), "Reward_" + i);
-        }
-
-        return amount;
     }
 
     private Vector3 CellToWorld(Vector2Int cell, float yPosition)
@@ -164,7 +189,6 @@ public class ProceduralLevelGenerator : MonoBehaviour
         return transform.position + new Vector3(cell.x * cellSize, yPosition, cell.y * cellSize);
     }
 
-    // CORRECCIÓN: Método Spawn implementado
     private GameObject Spawn(GameObject prefab, Vector3 position, string objectName)
     {
         GameObject instance = Instantiate(prefab, position, Quaternion.identity, transform);
@@ -186,12 +210,7 @@ public class ProceduralLevelGenerator : MonoBehaviour
         generatedObjects.Clear();
 
         List<GameObject> children = new List<GameObject>();
-
-        foreach (Transform child in transform)
-        {
-            children.Add(child.gameObject);
-        }
-
+        foreach (Transform child in transform) children.Add(child.gameObject);
         foreach (GameObject child in children)
         {
             if (Application.isPlaying) Destroy(child);
@@ -201,33 +220,16 @@ public class ProceduralLevelGenerator : MonoBehaviour
 
     private bool ValidateConfiguration()
     {
-        if (width < 5 || height < 5)
+        if (width < 10 || height < 8)
         {
-            Debug.LogError("El mapa debe tener al menos 5 x 5 celdas.");
+            Debug.LogError("Criterio Incumplido: La dimensión mínima debe ser 10 x 8 celdas.");
             return false;
         }
         if (floorPrefab == null || wallPrefab == null || startPrefab == null || goalPrefab == null)
         {
-            Debug.LogError("Faltan prefabs obligatorios en el Inspector.");
+            Debug.LogError("Faltan Prefabs obligatorios en el Inspector.");
             return false;
         }
-        if (rewardCount > 0 && rewardPrefab == null)
-        {
-            Debug.LogError("RewardPrefab debe estar asignado si rewardCount es mayor a 0.");
-            return false;
-        }
-
         return true;
     }
 }
-
-
-
-
-
-
-
-
-
-
-
